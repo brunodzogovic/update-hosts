@@ -1,59 +1,66 @@
+---
+# restore-or-toggle-apt-proxy.yml
 - hosts: all
   become: true
+  vars:
+    apt_proxy_enabled: true          # <-- set to false to disable again
+    apt_http_proxy:  "http://proxy.example.com:3128"
+    apt_https_proxy: "http://proxy.example.com:3128"
+    # Domains/IPs that should bypass the proxy (optional)
+    apt_no_proxy: ["localhost", "127.0.0.1", "169.254.169.254", ".example.internal"]
+
   tasks:
-    - name: Remove legacy APT proxy file
+    - name: Remove the "force no proxy" file if present
+      file:
+        path: /etc/apt/apt.conf.d/99no-proxy
+        state: absent
+
+    - name: Ensure APT proxy file is present when enabled
+      copy:
+        dest: /etc/apt/apt.conf.d/01proxy
+        mode: '0644'
+        content: |
+          Acquire::http::Proxy  "{{ apt_http_proxy }}";
+          Acquire::https::Proxy "{{ apt_https_proxy }}";
+          {% for host in apt_no_proxy | default([]) %}
+          Acquire::http::Proxy::"{{ host }}"  "DIRECT";
+          Acquire::https::Proxy::"{{ host }}" "DIRECT";
+          {% endfor %}
+      when: apt_proxy_enabled
+      notify: apt update cache
+
+    - name: Remove APT proxy file when disabled
       file:
         path: /etc/apt/apt.conf.d/01proxy
         state: absent
+      when: not apt_proxy_enabled
+      notify: apt update cache
 
-    - name: Explicitly disable APT proxies
-      copy:
-        dest: /etc/apt/apt.conf.d/99no-proxy
-        mode: '0644'
-        content: |
-          Acquire::http::Proxy "false";
-          Acquire::https::Proxy "false";
-
-    - name: Remove global proxy env from /etc/environment if present
+    - name: Ensure proxy env vars exist in /etc/environment when enabled
       lineinfile:
         path: /etc/environment
-        regexp: '^(http_proxy|https_proxy|HTTP_PROXY|HTTPS_PROXY)='
+        create: yes
+        state: present
+        regexp: '^{{ item.key }}='
+        line: '{{ item.key }}="{{ item.val }}"'
+      loop:
+        - { key: http_proxy,  val: '{{ apt_http_proxy }}' }
+        - { key: https_proxy, val: '{{ apt_https_proxy }}' }
+        - { key: no_proxy,    val: '{{ (apt_no_proxy | default([])) | join(",") }}' }
+        - { key: HTTP_PROXY,  val: '{{ apt_http_proxy }}' }
+        - { key: HTTPS_PROXY, val: '{{ apt_https_proxy }}' }
+        - { key: NO_PROXY,    val: '{{ (apt_no_proxy | default([])) | join(",") }}' }
+      when: apt_proxy_enabled
+
+    - name: Remove proxy env vars from /etc/environment when disabled
+      lineinfile:
+        path: /etc/environment
+        regexp: '^(http_proxy|https_proxy|no_proxy|HTTP_PROXY|HTTPS_PROXY|NO_PROXY)='
         state: absent
+      when: not apt_proxy_enabled
 
-    # Task to update Debian-based Linux distributions
-    - name: Update Debian-based Linux distributions
-      when: ansible_distribution in ['Debian', 'Ubuntu', 'LinuxMint']
-      ansible.builtin.apt:
-        upgrade: true
-        update_cache: true
-        cache_valid_time: 3600
+  handlers:
+    - name: apt update cache
+      apt:
+        update_cache: yes
 
-    # Task to update Arch Linux
-    - name: Update Arch-based Linux distributions
-      when: ansible_distribution == 'Arch Linux'
-      community.general.pacman:
-        update_cache: true
-        upgrade: true
-
-    # Task to update CentOS-based Linux distributions
-    - name: Update CentOS-based Linux distributions
-      when: ansible_distribution in ['CentOS', 'RedHat', 'OracleLinux', 'Amazon']
-      ansible.builtin.yum:
-        name: '*'
-        state: latest
-        update_only: true # Updates but does not install additional packages.
-
-    # Task to update Fedora-based Linux distributions
-    - name: Update Fedora-based Linux distributions
-      when: ansible_distribution == 'Fedora'
-      ansible.builtin.dnf:
-        name: '*'
-        state: latest
-        update_only: true # Updates but does not install additional packages.
-
-    # Task to update openSUSE-based Linux distributions
-    - name: Update openSUSE-based Linux distributions
-      when: ansible_distribution in ['openSUSE Leap', 'SUSE Linux Enterprise Server']
-      community.general.zypper:
-        name: '*'
-        state: latest
