@@ -1,87 +1,31 @@
 ---
-# update-upgrade.yml
-- name: Safe update & upgrade on remote hosts (no proxy tweaks)
+# update-upgrade-minimal.yml
+- name: Minimal package updates (no proxy tweaks)
   hosts: all
   become: true
   gather_facts: yes
 
-  vars:
-    reboot_if_needed: true   # set false to skip automatic reboot
-
   tasks:
-    # -------- Debian/Ubuntu --------
+    # Debian/Ubuntu: apt update && apt upgrade
     - name: Apt | Update package cache
       apt:
         update_cache: true
       when: ansible_facts['os_family'] == 'Debian'
 
-    - name: Apt | Dist upgrade
+    - name: Apt | Upgrade packages (no dist-upgrade)
       apt:
-        upgrade: dist
-        autoremove: true
-        autoclean: true
-      register: deb_upgrade
+        upgrade: yes          # == apt-get upgrade
       when: ansible_facts['os_family'] == 'Debian'
 
-    - name: Apt | Check if reboot is required
-      stat:
-        path: /var/run/reboot-required
-      register: deb_reboot_required
-      when: ansible_facts['os_family'] == 'Debian'
-
-    # -------- RHEL/Fedora/CentOS --------
-    - name: DNF | Make cache
-      dnf:
-        update_cache: true
-      when: ansible_facts['pkg_mgr'] == 'dnf'
-
-    - name: DNF | Upgrade all packages to latest
+    # RHEL/Fedora/CentOS: update all packages to latest
+    - name: DNF | Upgrade packages
       dnf:
         name: "*"
         state: latest
-      register: dnf_upgrade
       when: ansible_facts['pkg_mgr'] == 'dnf'
 
-    - name: Yum | Upgrade all packages to latest (legacy)
+    - name: YUM | Upgrade packages (legacy)
       yum:
         name: "*"
         state: latest
-      register: yum_upgrade
       when: ansible_facts['pkg_mgr'] == 'yum'
-
-    - name: RHEL | Check if reboot needed (needs-restarting -r)
-      shell: |
-        if command -v needs-restarting >/dev/null 2>&1; then
-          needs-restarting -r >/dev/null 2>&1
-          echo $?
-        else
-          echo 1
-        fi
-      args:
-        warn: false
-      register: rhel_reboot_check
-      changed_when: false
-      when: ansible_facts['os_family'] == 'RedHat'
-
-    # -------- Reboot logic (optional) --------
-    - name: Reboot if required (Debian/Ubuntu)
-      reboot:
-        reboot_timeout: 900
-      when:
-        - reboot_if_needed
-        - ansible_facts['os_family'] == 'Debian'
-        - deb_reboot_required.stat.exists | default(false)
-
-    - name: Reboot if required (RHEL family)
-      reboot:
-        reboot_timeout: 900
-      when:
-        - reboot_if_needed
-        - ansible_facts['os_family'] == 'RedHat'
-        - rhel_reboot_check.stdout | default('1') | int == 0
-
-    - name: Wait for connection after reboot
-      wait_for_connection:
-        timeout: 600
-      when: reboot_if_needed
-
